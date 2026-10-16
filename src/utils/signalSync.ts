@@ -4,8 +4,9 @@
  * without requiring any central server, database, or WebSocket.
  */
 
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, onSnapshot, disableNetwork } from 'firebase/firestore';
 import { db } from './firebase';
+import { isFirestoreQuotaExhausted, setQuotaExhausted } from './firebaseService';
 
 export interface ServerAviatorLiveState {
   roundNum: number;
@@ -79,27 +80,6 @@ export function getDeterministicCrash(roundIndex: number): number {
 }
 
 export function getCurrentSyncedRound(offsetRounds = 0): SyncedRoundInfo {
-  // If active game is broadcasting, sync directly with live game
-  try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ub999_last_live_aviator_round') : null;
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.roundNum && parsed.multiplier && (Date.now() - (parsed.timestamp || 0) < 60000)) {
-        const liveNum = parsed.roundNum + offsetRounds;
-        const liveMult = offsetRounds === 0 ? parsed.multiplier : getDeterministicCrash(liveNum);
-        return {
-          roundIndex: liveNum,
-          roundId: '#' + liveNum,
-          roundNum: liveNum,
-          multiplier: liveMult,
-          safeCashout: Math.round(liveMult * 0.90 * 100) / 100,
-          timeStr: new Date(parsed.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          secondsRemaining: 15
-        };
-      }
-    }
-  } catch {}
-
   const now = Date.now();
   const currentSlot = Math.floor(now / (ROUND_INTERVAL_SEC * 1000)) + offsetRounds;
   const multiplier = getDeterministicCrash(currentSlot);
@@ -198,13 +178,97 @@ export function listenToLiveGameRound(callback: (roundInfo: {
   };
 }
 
+export async function publishLiveAviatorRound(roundInfo: {
+  roundId: string;
+  roundNum: number;
+  multiplier: number;
+  status: 'WAITING' | 'FLYING' | 'CRASHED';
+  safeCashout?: number;
+}) {
+  broadcastLiveGameRound(roundInfo);
+  if (isFirestoreQuotaExhausted) return;
+  try {
+    const safeCashout = roundInfo.safeCashout || Math.round(roundInfo.multiplier * 0.90 * 100) / 100;
+    await setDoc(doc(db, 'signals', 'live'), {
+      nextCrashMultiplier: roundInfo.multiplier,
+      currentRoundId: roundInfo.roundId,
+      roundNum: roundInfo.roundNum,
+      status: roundInfo.status,
+      safeCashout,
+      updatedAt: new Date().toLocaleTimeString('bn-BD'),
+      timestamp: Date.now(),
+      isEnabled: true,
+      aviator: {
+        multiplier: roundInfo.multiplier,
+        period: roundInfo.roundId,
+        accuracy: 99,
+        isCustom: false
+      }
+    }, { merge: true });
+  } catch (error) {
+    const errMsg = String(error);
+    if (errMsg.includes('Quota') || errMsg.includes('resource-exhausted') || errMsg.includes('quota')) {
+      setQuotaExhausted();
+    }
+  }
+}
+
+export function subscribeToLiveGameFirestore(callback: (roundInfo: {
+  roundId: string;
+  roundNum: number;
+  multiplier: number;
+  status: 'WAITING' | 'FLYING' | 'CRASHED';
+  timestamp: number;
+}) => void): () => void {
+  if (isFirestoreQuotaExhausted) {
+    return () => {};
+  }
+  try {
+    let unsubRef = () => {};
+    const unsub = onSnapshot(doc(db, 'signals', 'live'), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data && (data.nextCrashMultiplier || data.aviator?.multiplier)) {
+          const multiplier = data.nextCrashMultiplier || data.aviator?.multiplier || 2.50;
+          const roundId = data.currentRoundId || data.aviator?.period || '#948000';
+          const roundNum = data.roundNum || (parseInt(roundId.replace('#', '')) || 948000);
+          callback({
+            roundId,
+            roundNum,
+            multiplier,
+            status: data.status || 'WAITING',
+            timestamp: data.timestamp || Date.now()
+          });
+        }
+      }
+    }, (err) => {
+      const errMsg = String(err);
+      if (errMsg.includes('Quota') || errMsg.includes('resource-exhausted') || errMsg.includes('quota')) {
+        setQuotaExhausted();
+        try { unsubRef(); } catch {}
+      }
+    });
+    unsubRef = unsub;
+    return unsub;
+  } catch (err) {
+    return () => {};
+  }
+}
+
 export async function syncSignalToFirestore(roundInfo: SyncedRoundInfo) {
+  if (isFirestoreQuotaExhausted) return;
   try {
     await setDoc(doc(db, 'signals', 'live'), {
       ...roundInfo,
-      updatedAt: new Date().toISOString()
-    });
+      nextCrashMultiplier: roundInfo.multiplier,
+      currentRoundId: roundInfo.roundId,
+      updatedAt: new Date().toISOString(),
+      timestamp: Date.now()
+    }, { merge: true });
   } catch (error) {
-    console.error('Error syncing signal to Firestore:', error);
+    const errMsg = String(error);
+    if (errMsg.includes('Quota') || errMsg.includes('resource-exhausted') || errMsg.includes('quota')) {
+      setQuotaExhausted();
+    }
   }
 }
