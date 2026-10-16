@@ -22,8 +22,7 @@ import {
   LogOut,
   AlertTriangle,
   ShieldAlert,
-  TrendingUp,
-  Download
+  TrendingUp
 } from 'lucide-react';
 import {
   subscribeToSettings,
@@ -609,15 +608,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToMain, onOpenSign
           <h1 className="font-black text-amber-400 tracking-wider text-base sm:text-lg whitespace-nowrap">
             ADMIN PANEL
           </h1>
-          <div className="ml-auto flex items-center gap-2">
-            <a
-              href="/download.html"
-              className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-md shadow-emerald-500/20 transition cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-              <span>dist.zip ডাউনলোড</span>
-            </a>
-          </div>
         </div>
       </header>
 

@@ -20,8 +20,7 @@ import {
   getSyncedHistory,
   listenToLiveGameRound,
   SyncedRoundInfo,
-  fetchLiveAviatorState,
-  subscribeToLiveGameFirestore
+  fetchLiveAviatorState
 } from '../utils/signalSync';
 
 interface SignalAppProps {
@@ -45,7 +44,7 @@ export const SignalApp: React.FC<SignalAppProps> = ({ onBackToMain, onOpenAdmin 
   const [roundOffset, setRoundOffset] = useState<number>(0);
   const lastLiveUpdateRef = useRef<number>(0);
 
-  // Sync with Server Authoritative Engine and Firebase Cloud Firestore (universal across all phones/devices)
+  // Sync with Server Authoritative Engine (universal across all phones/devices)
   useEffect(() => {
     let isMounted = true;
 
@@ -67,28 +66,12 @@ export const SignalApp: React.FC<SignalAppProps> = ({ onBackToMain, onOpenAdmin 
       } catch {}
     };
 
-    // Initial server fetch if backend Node server is running
+    // Initial server fetch
     syncWithServer();
-    const serverInterval = setInterval(syncWithServer, 1000);
+    const serverInterval = setInterval(syncWithServer, 1500);
 
-    // Direct Firestore real-time listener (works on Vercel, Netlify, Android, Mobile across different networks)
-    const unsubFirestore = subscribeToLiveGameFirestore((live) => {
-      if (!isMounted) return;
-      lastLiveUpdateRef.current = Date.now();
-      setSignals((prev) => ({
-        ...prev,
-        nextCrashMultiplier: live.multiplier,
-        currentRoundId: live.roundId,
-        updatedAt: new Date().toLocaleTimeString('bn-BD')
-      }));
-      if (live.status === 'CRASHED') {
-        setHistory((h) => [live.multiplier, ...h.filter((_, idx) => idx < 7)]);
-      }
-    });
-
-    // Direct broadcast listener from Aviator game (instant 0ms cross-tab sync if on same browser)
+    // Direct broadcast listener from Aviator game (instant 0ms cross-tab sync if on same phone)
     const unsubLive = listenToLiveGameRound((live) => {
-      if (!isMounted) return;
       lastLiveUpdateRef.current = Date.now();
       setSignals((prev) => ({
         ...prev,
@@ -97,40 +80,22 @@ export const SignalApp: React.FC<SignalAppProps> = ({ onBackToMain, onOpenAdmin 
         updatedAt: new Date().toLocaleTimeString('bn-BD')
       }));
       if (live.status === 'CRASHED') {
-        setHistory((h) => [live.multiplier, ...h.filter((_, idx) => idx < 7)]);
+        setHistory((h) => [live.multiplier, ...h.filter((x, idx) => idx < 7)]);
       }
     });
 
-    // Firebase live signals listener (handles Admin ON/OFF master switch and custom signal push)
+    // Fallback to firebase live signals if active
     const unsubFb = subscribeToLiveSignals((sig) => {
-      if (!isMounted) return;
-      if (sig && (sig.nextCrashMultiplier || typeof sig.isEnabled === 'boolean')) {
-        setSignals((prev) => ({
-          ...prev,
-          ...sig
-        }));
+      if (sig && sig.nextCrashMultiplier) {
+        lastLiveUpdateRef.current = Date.now();
+        setSignals(sig);
       }
     });
-
-    // Periodic time check: If no live game is active within last 45s, keep clock-synced round refreshed
-    const clockInterval = setInterval(() => {
-      if (Date.now() - lastLiveUpdateRef.current > 45000) {
-        const synced = getCurrentSyncedRound(roundOffset);
-        setSignals((prev) => ({
-          ...prev,
-          nextCrashMultiplier: synced.multiplier,
-          currentRoundId: synced.roundId,
-          updatedAt: synced.timeStr
-        }));
-      }
-    }, 5000);
 
     return () => {
       isMounted = false;
       clearInterval(serverInterval);
-      clearInterval(clockInterval);
       unsubLive();
-      unsubFirestore();
       unsubFb?.();
     };
   }, [roundOffset]);
@@ -146,7 +111,7 @@ export const SignalApp: React.FC<SignalAppProps> = ({ onBackToMain, onOpenAdmin 
           clearInterval(interval);
           setIsScanning(false);
           fetchLiveAviatorState().then((live) => {
-            if (live && live.targetCrash) {
+            if (live) {
               setSignals((s) => ({
                 ...s,
                 nextCrashMultiplier: live.targetCrash,
@@ -156,25 +121,8 @@ export const SignalApp: React.FC<SignalAppProps> = ({ onBackToMain, onOpenAdmin 
               if (live.history && live.history.length > 0) {
                 setHistory(live.history.slice(0, 8));
               }
-            } else {
-              const synced = getCurrentSyncedRound(0);
-              setSignals((s) => ({
-                ...s,
-                nextCrashMultiplier: synced.multiplier,
-                currentRoundId: synced.roundId,
-                updatedAt: synced.timeStr
-              }));
-              setHistory(getSyncedHistory(8));
             }
-          }).catch(() => {
-            const synced = getCurrentSyncedRound(0);
-            setSignals((s) => ({
-              ...s,
-              nextCrashMultiplier: synced.multiplier,
-              currentRoundId: synced.roundId,
-              updatedAt: synced.timeStr
-            }));
-          });
+          }).catch(() => {});
           return 100;
         }
         return prev + 25;

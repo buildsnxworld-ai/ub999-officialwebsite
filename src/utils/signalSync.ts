@@ -4,9 +4,8 @@
  * without requiring any central server, database, or WebSocket.
  */
 
-import { doc, setDoc, onSnapshot, disableNetwork } from 'firebase/firestore';
+import { doc, setDoc } from 'firebase/firestore';
 import { db } from './firebase';
-import { isFirestoreQuotaExhausted, setQuotaExhausted } from './firebaseService';
 
 export interface ServerAviatorLiveState {
   roundNum: number;
@@ -23,42 +22,10 @@ export interface ServerAviatorLiveState {
   serverTime: number;
 }
 
-export const FIREBASE_RTDB_LIVE_URL = 'https://ub-999-project-default-rtdb.firebaseio.com/live.json';
-
 let cachedServerState: ServerAviatorLiveState | null = null;
 let lastServerFetchTime = 0;
 
 export async function fetchLiveAviatorState(): Promise<ServerAviatorLiveState | null> {
-  // Priority 1: Direct fetch from Firebase Realtime Database (works on Vercel, Netlify, Android, Mobile)
-  try {
-    const res = await fetch(FIREBASE_RTDB_LIVE_URL, { cache: 'no-store' });
-    if (res.ok) {
-      const raw = await res.json();
-      if (raw && (raw.targetCrash || raw.nextCrashMultiplier || raw.roundNum)) {
-        const roundNum = Number(raw.roundNum) || (raw.roundId ? parseInt(String(raw.roundId).replace('#', '')) : 955730);
-        const targetCrash = Number(raw.targetCrash || raw.nextCrashMultiplier || 2.10);
-        const state: ServerAviatorLiveState = {
-          roundNum,
-          roundId: raw.roundId || raw.currentRoundId || ('#' + roundNum),
-          phase: (raw.phase as any) || 'WAITING',
-          targetCrash,
-          currentMultiplier: Number(raw.currentMultiplier || 1.00),
-          waitingCountdown: typeof raw.waitingCountdown === 'number' ? raw.waitingCountdown : 0,
-          safeCashout: Number(raw.safeCashout || Math.round(targetCrash * 0.90 * 100) / 100),
-          history: Array.isArray(raw.history) ? raw.history : [],
-          phaseStartedAt: Number(raw.phaseStartedAt) || Date.now(),
-          phaseDurationMs: Number(raw.phaseDurationMs) || 5000,
-          flightDurationMs: Number(raw.flightDurationMs) || 2500,
-          serverTime: Number(raw.serverTime) || Date.now()
-        };
-        cachedServerState = state;
-        lastServerFetchTime = Date.now();
-        return state;
-      }
-    }
-  } catch {}
-
-  // Priority 2: Fallback to local Express proxy
   try {
     const res = await fetch('/api/aviator/live');
     if (res.ok) {
@@ -68,11 +35,10 @@ export async function fetchLiveAviatorState(): Promise<ServerAviatorLiveState | 
       return data;
     }
   } catch {}
-
   return cachedServerState;
 }
 
-export const ROUND_INTERVAL_SEC = 12; // Dynamic round interval baseline
+export const ROUND_INTERVAL_SEC = 25; // 25 seconds per game round
 
 export interface SyncedRoundInfo {
   roundIndex: number;
@@ -113,34 +79,37 @@ export function getDeterministicCrash(roundIndex: number): number {
 }
 
 export function getCurrentSyncedRound(offsetRounds = 0): SyncedRoundInfo {
+  // If active game is broadcasting, sync directly with live game
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ub999_last_live_aviator_round') : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.roundNum && parsed.multiplier && (Date.now() - (parsed.timestamp || 0) < 60000)) {
+        const liveNum = parsed.roundNum + offsetRounds;
+        const liveMult = offsetRounds === 0 ? parsed.multiplier : getDeterministicCrash(liveNum);
+        return {
+          roundIndex: liveNum,
+          roundId: '#' + liveNum,
+          roundNum: liveNum,
+          multiplier: liveMult,
+          safeCashout: Math.round(liveMult * 0.90 * 100) / 100,
+          timeStr: new Date(parsed.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          secondsRemaining: 15
+        };
+      }
+    }
+  } catch {}
+
   const now = Date.now();
-  
-  // High-priority: Use live server state if available (< 30s fresh)
-  if (cachedServerState && (now - lastServerFetchTime < 30000)) {
-    const roundNum = cachedServerState.roundNum + offsetRounds;
-    const roundId = '#' + roundNum;
-    const multiplier = cachedServerState.targetCrash;
-    const secondsRemaining = cachedServerState.phase === 'WAITING' 
-      ? Math.max(0, Math.ceil(cachedServerState.waitingCountdown))
-      : 0;
-
-    return {
-      roundIndex: roundNum,
-      roundId,
-      roundNum,
-      multiplier,
-      safeCashout: Math.round(multiplier * 0.90 * 100) / 100,
-      timeStr: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      secondsRemaining
-    };
-  }
-
-  // Dynamic round tracking fallback: Calculate active round slot based on dynamic game tempo
-  const baseNum = cachedServerState ? cachedServerState.roundNum : 955730;
-  const currentSlot = Math.floor(now / 15000) + offsetRounds;
+  const currentSlot = Math.floor(now / (ROUND_INTERVAL_SEC * 1000)) + offsetRounds;
   const multiplier = getDeterministicCrash(currentSlot);
-  const roundNum = baseNum + offsetRounds;
+  const roundNum = 948000 + (currentSlot % 10000);
   const roundId = '#' + roundNum;
+  const elapsedInSlot = (now % (ROUND_INTERVAL_SEC * 1000)) / 1000;
+  const secondsRemaining = Math.max(0, Math.round(ROUND_INTERVAL_SEC - elapsedInSlot));
+
+  const d = new Date(currentSlot * ROUND_INTERVAL_SEC * 1000);
+  const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   return {
     roundIndex: currentSlot,
@@ -148,8 +117,8 @@ export function getCurrentSyncedRound(offsetRounds = 0): SyncedRoundInfo {
     roundNum,
     multiplier,
     safeCashout: Math.round(multiplier * 0.90 * 100) / 100,
-    timeStr: new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    secondsRemaining: 5
+    timeStr,
+    secondsRemaining
   };
 }
 
@@ -229,120 +198,13 @@ export function listenToLiveGameRound(callback: (roundInfo: {
   };
 }
 
-export async function publishLiveAviatorRound(roundInfo: {
-  roundId: string;
-  roundNum: number;
-  multiplier: number;
-  status: 'WAITING' | 'FLYING' | 'CRASHED';
-  safeCashout?: number;
-}) {
-  broadcastLiveGameRound(roundInfo);
-
-  // Directly push to Firebase RTDB live.json (Read by Android Signal App every 1s)
-  try {
-    const safeCashout = roundInfo.safeCashout || Math.round(roundInfo.multiplier * 0.90 * 100) / 100;
-    fetch(FIREBASE_RTDB_LIVE_URL, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        roundNum: roundInfo.roundNum,
-        roundId: roundInfo.roundId,
-        currentRoundId: roundInfo.roundId,
-        targetCrash: roundInfo.multiplier,
-        nextCrashMultiplier: roundInfo.multiplier,
-        safeCashout,
-        phase: roundInfo.status,
-        accuracy: 98.6,
-        confidence: 'HIGH',
-        updatedAt: new Date().toLocaleTimeString('bn-BD', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-  } catch {}
-
-  if (isFirestoreQuotaExhausted) return;
-  try {
-    const safeCashout = roundInfo.safeCashout || Math.round(roundInfo.multiplier * 0.90 * 100) / 100;
-    await setDoc(doc(db, 'signals', 'live'), {
-      nextCrashMultiplier: roundInfo.multiplier,
-      currentRoundId: roundInfo.roundId,
-      roundNum: roundInfo.roundNum,
-      status: roundInfo.status,
-      safeCashout,
-      updatedAt: new Date().toLocaleTimeString('bn-BD'),
-      timestamp: Date.now(),
-      isEnabled: true,
-      aviator: {
-        multiplier: roundInfo.multiplier,
-        period: roundInfo.roundId,
-        accuracy: 99,
-        isCustom: false
-      }
-    }, { merge: true });
-  } catch (error) {
-    const errMsg = String(error);
-    if (errMsg.includes('Quota') || errMsg.includes('resource-exhausted') || errMsg.includes('quota')) {
-      setQuotaExhausted();
-    }
-  }
-}
-
-export function subscribeToLiveGameFirestore(callback: (roundInfo: {
-  roundId: string;
-  roundNum: number;
-  multiplier: number;
-  status: 'WAITING' | 'FLYING' | 'CRASHED';
-  timestamp: number;
-}) => void): () => void {
-  if (isFirestoreQuotaExhausted) {
-    return () => {};
-  }
-  try {
-    let unsubRef = () => {};
-    const unsub = onSnapshot(doc(db, 'signals', 'live'), (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        if (data && (data.nextCrashMultiplier || data.aviator?.multiplier)) {
-          const multiplier = data.nextCrashMultiplier || data.aviator?.multiplier || 2.50;
-          const roundId = data.currentRoundId || data.aviator?.period || '#948000';
-          const roundNum = data.roundNum || (parseInt(roundId.replace('#', '')) || 948000);
-          callback({
-            roundId,
-            roundNum,
-            multiplier,
-            status: data.status || 'WAITING',
-            timestamp: data.timestamp || Date.now()
-          });
-        }
-      }
-    }, (err) => {
-      const errMsg = String(err);
-      if (errMsg.includes('Quota') || errMsg.includes('resource-exhausted') || errMsg.includes('quota')) {
-        setQuotaExhausted();
-        try { unsubRef(); } catch {}
-      }
-    });
-    unsubRef = unsub;
-    return unsub;
-  } catch (err) {
-    return () => {};
-  }
-}
-
 export async function syncSignalToFirestore(roundInfo: SyncedRoundInfo) {
-  if (isFirestoreQuotaExhausted) return;
   try {
     await setDoc(doc(db, 'signals', 'live'), {
       ...roundInfo,
-      nextCrashMultiplier: roundInfo.multiplier,
-      currentRoundId: roundInfo.roundId,
-      updatedAt: new Date().toISOString(),
-      timestamp: Date.now()
-    }, { merge: true });
+      updatedAt: new Date().toISOString()
+    });
   } catch (error) {
-    const errMsg = String(error);
-    if (errMsg.includes('Quota') || errMsg.includes('resource-exhausted') || errMsg.includes('quota')) {
-      setQuotaExhausted();
-    }
+    console.error('Error syncing signal to Firestore:', error);
   }
 }
