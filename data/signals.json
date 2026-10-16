@@ -1,13 +1,13 @@
 {
   "isEnabled": true,
-  "nextCrashMultiplier": 4.24,
-  "currentRoundId": "#984172",
-  "updatedAt": "৯:৫৫:১৮ AM",
+  "nextCrashMultiplier": 7.75,
+  "currentRoundId": "#955063",
+  "updatedAt": "৬:৫০:০৩ PM",
   "aviator": {
-    "multiplier": 4.24,
+    "multiplier": 7.75,
     "accuracy": 99,
-    "period": "#984172",
-    "updatedAt": "৩:৫৫:১৬ PM",
+    "period": "#955063",
+    "updatedAt": "১২:৫০:০২ AM",
     "isCustom": false
   }
 }
