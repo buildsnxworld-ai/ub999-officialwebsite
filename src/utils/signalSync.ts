@@ -80,6 +80,27 @@ export function getDeterministicCrash(roundIndex: number): number {
 }
 
 export function getCurrentSyncedRound(offsetRounds = 0): SyncedRoundInfo {
+  // If active game is broadcasting, sync directly with live game
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ub999_last_live_aviator_round') : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.roundNum && parsed.multiplier && (Date.now() - (parsed.timestamp || 0) < 60000)) {
+        const liveNum = parsed.roundNum + offsetRounds;
+        const liveMult = offsetRounds === 0 ? parsed.multiplier : getDeterministicCrash(liveNum);
+        return {
+          roundIndex: liveNum,
+          roundId: '#' + liveNum,
+          roundNum: liveNum,
+          multiplier: liveMult,
+          safeCashout: Math.round(liveMult * 0.90 * 100) / 100,
+          timeStr: new Date(parsed.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          secondsRemaining: 15
+        };
+      }
+    }
+  } catch {}
+
   const now = Date.now();
   const currentSlot = Math.floor(now / (ROUND_INTERVAL_SEC * 1000)) + offsetRounds;
   const multiplier = getDeterministicCrash(currentSlot);

@@ -1080,10 +1080,17 @@ export function AviatorCrashGameWeb({
         } else {
           // Universal clock-synchronized round - guaranteed 100% identical on Vercel, Netlify, mobile phones, etc.
           const synced = getCurrentSyncedRound(0);
-          roundSequenceRef.current = synced.roundIndex;
-          generatedRoundNum = synced.roundNum;
-          generatedRoundId = synced.roundId;
-          targetCrash = synced.multiplier;
+          if (roundSequenceRef.current === 0) {
+            roundSequenceRef.current = synced.roundIndex;
+          } else {
+            roundSequenceRef.current = Math.max(roundSequenceRef.current + 1, synced.roundIndex);
+          }
+          generatedRoundNum = 948000 + (roundSequenceRef.current % 10000);
+          generatedRoundId = '#' + generatedRoundNum;
+          targetCrash = getDeterministicCrash(roundSequenceRef.current);
+          if (targetCrash === lastCrashRef.current) {
+            targetCrash = Math.round((targetCrash + 0.18 + (generatedRoundNum % 7) * 0.08) * 100) / 100;
+          }
         }
 
         lastCrashRef.current = targetCrash;
