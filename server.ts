@@ -208,8 +208,7 @@ const initialTarget = computeCrashMultiplier(initialRoundSeed);
 const initialFlightDuration = calculateFlightDuration(initialTarget);
 
 let aviatorEngineState = {
-  roundNum: 948000 + (initialRoundSeed % 10000),
-  seedSlot: initialRoundSeed,
+  roundNum: 948250 + (initialRoundSeed % 10000),
   targetCrash: initialTarget,
   history: [1.85, 3.20, 1.15, 4.50, 1.42, 2.10, 8.90, 1.25, 2.75, 1.30],
   roundStartTime: Date.now(),
@@ -231,7 +230,6 @@ function updateAviatorEngine() {
 
     // Step to next round
     aviatorEngineState.roundNum += 1;
-    aviatorEngineState.seedSlot += 1;
     aviatorEngineState.roundStartTime += aviatorEngineState.totalRoundDurationMs;
 
     // Next target multiplier
@@ -239,7 +237,7 @@ function updateAviatorEngine() {
       aviatorEngineState.targetCrash = adminOverrideMultiplier;
       adminOverrideMultiplier = null;
     } else {
-      aviatorEngineState.targetCrash = computeCrashMultiplier(aviatorEngineState.seedSlot);
+      aviatorEngineState.targetCrash = computeCrashMultiplier(aviatorEngineState.roundNum);
     }
 
     aviatorEngineState.flightDurationMs = calculateFlightDuration(aviatorEngineState.targetCrash);
@@ -630,35 +628,14 @@ async function startServer() {
     }
   });
 
-  // Dedicated download page for mobile and web
-  app.get(['/download', '/download.html', '/download/'], (req, res) => {
-    const pagePath = path.resolve(process.cwd(), 'download.html');
-    if (fs.existsSync(pagePath)) {
-      return res.sendFile(pagePath);
-    }
-    res.redirect('/dist.zip');
-  });
-
-  // Direct download for dist.zip
-  app.get(['/dist.zip', '/api/download-dist', '/download/dist.zip', '/download-dist'], (req, res) => {
+  // API to download dist.zip (Placed BEFORE vite.middlewares)
+  app.get(['/api/download-dist', '/dist.zip'], (req, res) => {
     const zipPath = path.resolve(process.cwd(), 'dist.zip');
     if (fs.existsSync(zipPath)) {
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', 'attachment; filename="dist.zip"');
-      return res.sendFile(zipPath);
+      res.download(zipPath, 'dist.zip');
+    } else {
+      res.status(404).send('dist.zip not found');
     }
-    res.status(404).send('dist.zip not found');
-  });
-
-  // Direct download for project-code.zip
-  app.get(['/project-code.zip', '/api/download-project', '/download/project-code.zip', '/download-zip'], (req, res) => {
-    const zipPath = path.resolve(process.cwd(), 'project-code.zip');
-    if (fs.existsSync(zipPath)) {
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', 'attachment; filename="project-code.zip"');
-      return res.sendFile(zipPath);
-    }
-    res.status(404).send('project-code.zip not found');
   });
 
   // Create Vite server in middleware mode
@@ -696,7 +673,6 @@ async function startServer() {
       next(e);
     }
   });
-
 
   if (fs.existsSync(path.resolve(process.cwd(), 'dist'))) {
     app.use(express.static(path.resolve(process.cwd(), 'dist')));
