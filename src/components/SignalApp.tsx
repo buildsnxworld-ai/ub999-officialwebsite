@@ -69,7 +69,7 @@ export const SignalApp: React.FC<SignalAppProps> = ({ onBackToMain, onOpenAdmin 
 
     // Initial server fetch if backend Node server is running
     syncWithServer();
-    const serverInterval = setInterval(syncWithServer, 2000);
+    const serverInterval = setInterval(syncWithServer, 1000);
 
     // Direct Firestore real-time listener (works on Vercel, Netlify, Android, Mobile across different networks)
     const unsubFirestore = subscribeToLiveGameFirestore((live) => {
