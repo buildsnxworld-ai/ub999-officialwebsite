@@ -1,33 +1,61 @@
-const isFirestoreQuotaExhausted = true;
+import { db } from './firebase';
+import {
+  doc,
+  setDoc,
+  updateDoc,
+  collection,
+  query,
+  orderBy,
+  limit,
+  onSnapshot,
+  getDoc,
+  getDocs,
+  disableNetwork
+} from 'firebase/firestore';
 
-// Helper to disable network not needed now, but keeping for safety
+export let isFirestoreQuotaExhausted = true;
+
+// Immediately disable Firestore network to prevent overloaded retries and backoff delay errors
+try {
+  disableNetwork(db).catch(() => {});
+} catch {}
+
+export const setQuotaExhausted = () => {
+  isFirestoreQuotaExhausted = true;
+  try {
+    disableNetwork(db).catch(() => {});
+  } catch {}
+};
+
+// Helper to disable network if explicitly needed
 const disableFirebaseNetwork = () => {
-    try {
-        disableNetwork(db).catch(() => {});
-    } catch {}
+  try {
+    disableNetwork(db).catch(() => {});
+  } catch {}
 };
 
-// Fire and forget, no-op if quota is exhausted
+// Fire and forget
 const firestoreWrite = async (op: () => Promise<void>) => {
-    // No-op
+  if (isFirestoreQuotaExhausted) return;
+  try {
+    await op();
+  } catch (err) {
+    handleFirestoreError(err);
+  }
 };
-
-// Mock versions of Firestore functions to satisfy existing imports
-const doc = (...args: any[]) => ({});
-const setDoc = async (...args: any[]) => {};
-const updateDoc = async (...args: any[]) => {};
-const collection = (...args: any[]) => ({});
-const query = (...args: any[]) => ({});
-const orderBy = (...args: any[]) => ({});
-const limit = (...args: any[]) => ({});
-const onSnapshot = (...args: any[]) => () => {};
-const getDoc = async (...args: any[]) => ({ exists: () => false });
-const getDocs = async (...args: any[]) => ({ forEach: () => {} });
-const disableNetwork = async (...args: any[]) => {};
-const db = {};
 
 export function handleFirestoreError(err: any, unsubFn?: () => void) {
-    // No-op
+  const errMsg = err instanceof Error ? err.message : String(err);
+  if (errMsg.includes('Quota') || errMsg.includes('resource-exhausted') || errMsg.includes('quota')) {
+    setQuotaExhausted();
+    if (unsubFn) {
+      try {
+        unsubFn();
+      } catch {}
+    }
+    return;
+  }
+  console.warn('Firestore notice:', err);
 }
 
 
@@ -571,62 +599,28 @@ export async function updateLiveSignals(newSignals: Partial<LiveSignalData>) {
     });
   } catch {}
 
-  // Sync to public signals.json for unauthenticated access by Android app
-  try {
-    const publicSignals = {
-      nextCrashMultiplier: newSignals.nextCrashMultiplier || 2.50,
-      currentRoundId: newSignals.currentRoundId || '#000000',
-      updatedAt: newSignals.updatedAt || new Date().toLocaleTimeString('bn-BD')
-    };
-    await fetch('/signals.json', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(publicSignals)
-    });
-  } catch (err) {
-    console.error('Public signals.json sync error:', err);
-  }
-
-  // Direct Firestore REST PATCH so static deployments (Netlify/Vercel) ALWAYS sync Firestore live signals instantly!
-  try {
-    const firestoreUrl = "https://firestore.googleapis.com/v1/projects/plenary-charge-tzbz0/databases/ai-studio-multiappecosyste-b6f431e7-e9f9-4425-912d-c3133dd3c899/documents/signals/live?updateMask.fieldPaths=nextCrashMultiplier&updateMask.fieldPaths=currentRoundId&updateMask.fieldPaths=aviator&updateMask.fieldPaths=isEnabled&updateMask.fieldPaths=updatedAt";
-    const multiplier = typeof newSignals.nextCrashMultiplier === 'number' && newSignals.nextCrashMultiplier > 0 ? newSignals.nextCrashMultiplier : (newSignals.aviator?.multiplier || 2.50);
-    const roundId = newSignals.currentRoundId || newSignals.aviator?.period || `#${Math.floor(100000 + Math.random() * 900000)}`;
-    const isEnabled = newSignals.isEnabled !== false;
-    const timeStr = newSignals.updatedAt || new Date().toLocaleTimeString('bn-BD');
-
-    const body = {
-      fields: {
-        nextCrashMultiplier: { doubleValue: multiplier },
-        currentRoundId: { stringValue: roundId },
-        isEnabled: { booleanValue: isEnabled },
-        updatedAt: { stringValue: timeStr },
-        aviator: {
-          mapValue: {
-            fields: {
-              multiplier: { doubleValue: multiplier },
-              period: { stringValue: roundId },
-              accuracy: { integerValue: 99 },
-              isCustom: { booleanValue: Boolean(newSignals.aviator?.isCustom) }
-            }
-          }
-        }
-      }
-    };
-
-    await fetch(firestoreUrl, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-  } catch (err) {
-    console.error('Firestore REST sync error:', err);
-  }
-
+  // Sync to Firestore using official SDK (only if quota is available)
   if (!isFirestoreQuotaExhausted) {
     try {
       const signalsDoc = doc(db, 'signals', 'live');
-      await setDoc(signalsDoc, newSignals, { merge: true });
+      const multiplier = typeof newSignals.nextCrashMultiplier === 'number' && newSignals.nextCrashMultiplier > 0
+        ? newSignals.nextCrashMultiplier
+        : (newSignals.aviator?.multiplier || 2.50);
+      const roundId = newSignals.currentRoundId || newSignals.aviator?.period || `#${Math.floor(100000 + Math.random() * 900000)}`;
+
+      await setDoc(signalsDoc, {
+        ...newSignals,
+        nextCrashMultiplier: multiplier,
+        currentRoundId: roundId,
+        updatedAt: newSignals.updatedAt || new Date().toLocaleTimeString('bn-BD'),
+        timestamp: Date.now(),
+        aviator: {
+          multiplier,
+          period: roundId,
+          accuracy: 99,
+          isCustom: Boolean(newSignals.aviator?.isCustom)
+        }
+      }, { merge: true });
     } catch (err) {
       handleFirestoreError(err);
     }

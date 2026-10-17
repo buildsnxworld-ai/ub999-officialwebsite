@@ -6,7 +6,8 @@ import {
   getCurrentSyncedRound,
   getDeterministicCrash,
   broadcastLiveGameRound,
-  fetchLiveAviatorState
+  fetchLiveAviatorState,
+  publishLiveAviatorRound
 } from '../utils/signalSync';
 
 export interface RoundHistoryItem {
@@ -34,7 +35,7 @@ function generateCryptoHash(seed: number): string {
 const INITIAL_ROUNDS: RoundHistoryItem[] = Array.from({ length: 60 }).map((_, idx) => {
   const currentSlot = Math.floor(Date.now() / 25000);
   const slot = currentSlot - 1 - idx;
-  const roundNum = 948000 + (slot % 10000);
+  const roundNum = 955730 - idx;
   const mult = getDeterministicCrash(slot);
   const minutesAgo = idx * 0.42;
   const d = new Date(Date.now() - minutesAgo * 60000);
@@ -1065,71 +1066,47 @@ export function AviatorCrashGameWeb({
           }
         }
 
-        // Check authoritative server engine state first for 100% universal sync
-        let generatedRoundNum: number;
-        let generatedRoundId: string;
-        let targetCrash: number;
-
-        const serverLive = await fetchLiveAviatorState().catch(() => null);
-        if (serverLive && serverLive.roundNum && serverLive.targetCrash) {
-          generatedRoundNum = serverLive.roundNum;
-          generatedRoundId = serverLive.roundId;
-          targetCrash = serverLive.targetCrash;
-          roundSequenceRef.current = generatedRoundNum;
-        } else {
-          // Fallback to local sequence if server unreachable
-          if (roundSequenceRef.current === 0) {
-            const timeSlot = Math.floor(Date.now() / 1000);
-            let baseNum = 940000 + (timeSlot % 100000);
-            try {
-              const saved = localStorage.getItem('ub999_aviator_current_round_num');
-              if (saved && !isNaN(Number(saved))) {
-                baseNum = Math.max(Number(saved), baseNum);
-              }
-            } catch {}
-            roundSequenceRef.current = baseNum;
-          }
-          roundSequenceRef.current += 1;
-          generatedRoundNum = roundSequenceRef.current;
-          generatedRoundId = '#' + generatedRoundNum;
-          targetCrash = getDeterministicCrash(generatedRoundNum);
-          if (targetCrash === lastCrashRef.current) {
-            targetCrash = Math.round((targetCrash + 0.18 + (generatedRoundNum % 7) * 0.08) * 100) / 100;
+        // Option 1 Master Writer: Browser controls the game sequence and drives Firebase RTDB
+        if (roundSequenceRef.current === 0) {
+          try {
+            const cached = localStorage.getItem('ub999_aviator_current_round_num');
+            const parsed = cached ? parseInt(cached) : 0;
+            roundSequenceRef.current = (parsed && parsed >= 955700) ? parsed : 955860;
+          } catch {
+            roundSequenceRef.current = 955860;
           }
         }
 
-        lastCrashRef.current = targetCrash;
+        roundSequenceRef.current += 1;
+        const generatedRoundNum = roundSequenceRef.current;
+        const generatedRoundId = '#' + generatedRoundNum;
+        const targetCrash = getDeterministicCrash(generatedRoundNum);
+
         try {
           localStorage.setItem('ub999_aviator_current_round_num', String(generatedRoundNum));
         } catch {}
-        const currentTimeStr = new Date().toLocaleTimeString('bn-BD');
 
-        // Broadcast to Signal App (cross-tab + local storage + event + cloud)
-        broadcastLiveGameRound({
+        // Align history round IDs with current round sequence
+        setRoundHistory((prev) => {
+          return prev.map((item, idx) => ({
+            ...item,
+            roundId: generatedRoundNum - 1 - idx
+          }));
+        });
+
+        lastCrashRef.current = targetCrash;
+        setCrashPoint(targetCrash);
+
+        // Broadcast to Signal App (instant Firebase RTDB PUT + cross-tab + local storage + Firestore)
+        publishLiveAviatorRound({
           roundId: generatedRoundId,
           roundNum: generatedRoundNum,
           multiplier: targetCrash,
-          status: 'WAITING'
+          status: 'WAITING',
+          safeCashout: Math.round(targetCrash * 0.90 * 100) / 100
         });
 
-        updateLiveSignals({
-          nextCrashMultiplier: targetCrash,
-          currentRoundId: generatedRoundId,
-          updatedAt: currentTimeStr,
-          aviator: {
-            multiplier: targetCrash,
-            accuracy: 99,
-            period: generatedRoundId,
-            updatedAt: currentTimeStr,
-            isCustom: false
-          }
-        }).catch(() => {});
-
-        setCrashPoint(targetCrash);
-
-        const waitTotalMs = serverLive && serverLive.phase === 'WAITING' && serverLive.waitingCountdown > 0.5 
-          ? Math.min(5000, Math.max(1200, Math.round(serverLive.waitingCountdown * 1000)))
-          : 5000;
+        const waitTotalMs = 5000;
         const waitStartTime = Date.now();
         while (Date.now() - waitStartTime < waitTotalMs) {
           if (isCancelled) return;
@@ -1143,7 +1120,7 @@ export function AviatorCrashGameWeb({
         setPhase('FLYING');
         setOnlineCount(Math.floor(Math.random() * 500) + 400);
 
-        broadcastLiveGameRound({
+        publishLiveAviatorRound({
           roundId: generatedRoundId,
           roundNum: generatedRoundNum,
           multiplier: targetCrash,
@@ -1180,7 +1157,7 @@ export function AviatorCrashGameWeb({
         setMultiplier(targetCrash);
         setOnlineCount(Math.floor(Math.random() * 300) + 200);
 
-        broadcastLiveGameRound({
+        publishLiveAviatorRound({
           roundId: generatedRoundId,
           roundNum: generatedRoundNum,
           multiplier: targetCrash,
