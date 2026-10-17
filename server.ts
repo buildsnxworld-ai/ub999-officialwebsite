@@ -207,8 +207,10 @@ const initialRoundSeed = Math.floor(Date.now() / 25000);
 const initialTarget = computeCrashMultiplier(initialRoundSeed);
 const initialFlightDuration = calculateFlightDuration(initialTarget);
 
-let aviatorEngineState = {
-  roundNum: 948250 + (initialRoundSeed % 10000),
+const savedEngineState = readJsonFile<any>('aviator_engine_state.json', null);
+let aviatorEngineState = (savedEngineState && savedEngineState.roundNum >= 955700) ? savedEngineState : {
+  roundNum: Math.max(955780, 948000 + (initialRoundSeed % 10000)),
+  seedSlot: initialRoundSeed,
   targetCrash: initialTarget,
   history: [1.85, 3.20, 1.15, 4.50, 1.42, 2.10, 8.90, 1.25, 2.75, 1.30],
   roundStartTime: Date.now(),
@@ -219,6 +221,7 @@ let aviatorEngineState = {
 function updateAviatorEngine() {
   const now = Date.now();
   let elapsed = now - aviatorEngineState.roundStartTime;
+  let hasStepped = false;
 
   // If previous round finished, step forward to current active round
   while (elapsed >= aviatorEngineState.totalRoundDurationMs) {
@@ -230,6 +233,7 @@ function updateAviatorEngine() {
 
     // Step to next round
     aviatorEngineState.roundNum += 1;
+    aviatorEngineState.seedSlot += 1;
     aviatorEngineState.roundStartTime += aviatorEngineState.totalRoundDurationMs;
 
     // Next target multiplier
@@ -237,13 +241,18 @@ function updateAviatorEngine() {
       aviatorEngineState.targetCrash = adminOverrideMultiplier;
       adminOverrideMultiplier = null;
     } else {
-      aviatorEngineState.targetCrash = computeCrashMultiplier(aviatorEngineState.roundNum);
+      aviatorEngineState.targetCrash = computeCrashMultiplier(aviatorEngineState.seedSlot);
     }
 
     aviatorEngineState.flightDurationMs = calculateFlightDuration(aviatorEngineState.targetCrash);
     aviatorEngineState.totalRoundDurationMs = 5000 + aviatorEngineState.flightDurationMs + 2600;
 
     elapsed = now - aviatorEngineState.roundStartTime;
+    hasStepped = true;
+  }
+
+  if (hasStepped) {
+    writeJsonFile('aviator_engine_state.json', aviatorEngineState);
   }
 }
 
@@ -628,14 +637,35 @@ async function startServer() {
     }
   });
 
-  // API to download dist.zip (Placed BEFORE vite.middlewares)
-  app.get(['/api/download-dist', '/dist.zip'], (req, res) => {
+  // Dedicated download page for mobile and web
+  app.get(['/download', '/download.html', '/download/'], (req, res) => {
+    const pagePath = path.resolve(process.cwd(), 'download.html');
+    if (fs.existsSync(pagePath)) {
+      return res.sendFile(pagePath);
+    }
+    res.redirect('/dist.zip');
+  });
+
+  // Direct download for dist.zip
+  app.get(['/dist.zip', '/api/download-dist', '/download/dist.zip', '/download-dist'], (req, res) => {
     const zipPath = path.resolve(process.cwd(), 'dist.zip');
     if (fs.existsSync(zipPath)) {
-      res.download(zipPath, 'dist.zip');
-    } else {
-      res.status(404).send('dist.zip not found');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="dist.zip"');
+      return res.sendFile(zipPath);
     }
+    res.status(404).send('dist.zip not found');
+  });
+
+  // Direct download for project-code.zip
+  app.get(['/project-code.zip', '/api/download-project', '/download/project-code.zip', '/download-zip'], (req, res) => {
+    const zipPath = path.resolve(process.cwd(), 'project-code.zip');
+    if (fs.existsSync(zipPath)) {
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="project-code.zip"');
+      return res.sendFile(zipPath);
+    }
+    res.status(404).send('project-code.zip not found');
   });
 
   // Create Vite server in middleware mode
@@ -674,6 +704,7 @@ async function startServer() {
     }
   });
 
+
   if (fs.existsSync(path.resolve(process.cwd(), 'dist'))) {
     app.use(express.static(path.resolve(process.cwd(), 'dist')));
     app.get('*', (req, res) => {
@@ -683,11 +714,8 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  // 24/7 Firebase Realtime Database Sync Heartbeat (Syncs every 1.5s for real-time accuracy)
-  syncLiveStateToFirebase(true);
-  setInterval(() => {
-    syncLiveStateToFirebase();
-  }, 1500);
+  // Note: Option 1 enabled. Background server sync to Firebase RTDB is disabled.
+  // The user's active website browser is the sole Master Writer to Firebase RTDB live.json.
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running at http://localhost:${PORT}`);
